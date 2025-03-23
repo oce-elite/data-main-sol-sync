@@ -1,58 +1,83 @@
--- config for loot selling
-local config = {
-    price_percent = 100,  -- Percentage of the price from LootShopConfigTable the player receives
-    cash_to_bank = true   -- Whether to add the money to the player's bank account (true) or to their cash (false)
-}
-local npcConfig = {}
+local lootSeller = Action()
 
--- Action for the item that triggers the loot sell
-local itemLootSeller = Action()
-npcConfig.shop = LootShopConfig
-function itemLootSeller.onUse(player, item, fromPosition, target, toPosition, isHotkey)
-    -- Ensure the item isn't too far away
-    if toPosition.x ~= 65535 and getDistanceBetween(player:getPosition(), toPosition) > 1 then
-        player:sendTextMessage(MESSAGE_INFO_DESCR, 'This item is too far away.')
+-- Helper: get highest NPC price for an item
+function getItemSellPrice(itemId)
+    -- Example implementation: using a predefined table of prices.
+    -- In practice, populate npcPrices from NPC data or item definitions.
+    return npcPrices[itemId] or 0
+end
+
+-- Define the onUse function for the lootSeller action
+function lootSeller.onUse(player, item, fromPosition, target, toPosition, isHotkey)
+    -- Check if the correct item (50372) is used
+    if item:getId() ~= 50372 then
+        return false -- If the wrong item is used, do nothing
+    end
+
+    -- Find the player's loot pouch (store inbox).
+    local inbox = player:getSlotItem(CONST_SLOT_STORE_INBOX)
+    if not inbox then
+        player:sendTextMessage(MESSAGE_EVENT_ADVANCE, "You don't have a loot inbox to sell from.")
         return true
     end
 
-    local totalGold = 0
-    local soldItems = {}
-
-    -- Loop through the player's inventory
-    for _, playerItem in ipairs(player:getItems()) do
-        -- Check if the item is in LootShopConfigTable (no need for categories or manual item insertion)
-        if LootShopConfig[playerItem.itemid] then
-            local itemValue = LootShopConfigTable[playerItem.itemid] * playerItem.type  -- Calculate value based on quantity
-            totalGold = totalGold + itemValue
-
-            -- Remove the item from the player's inventory
-            playerItem:remove()
-
-            -- Store the item and its value for feedback
-            table.insert(soldItems, playerItem:getName() .. " (" .. itemValue .. " gold)")
+    local totalWorth = 0
+    -- Recursive function to process containers
+    local function sellContainerItems(container)
+        for i = container:getSize() - 1, 0, -1 do
+            local thing = container:getItem(i)
+            if thing then
+                if thing:isContainer() then
+                    sellContainerItems(thing) -- recursively sell items in sub-container
+                    -- Optionally, if container is now empty, remove it:
+                    if thing:getSize() == 0 then
+                        thing:remove()
+                    end
+                else
+                    local id, count = thing:getId(), thing:getCount()
+                    local price = getItemSellPrice(id)
+                    if price > 0 then
+                        totalWorth = totalWorth + (price * count)
+                        thing:remove() -- remove the sold items from loot pouch
+                    end
+                end
+            end
         end
     end
 
-    -- If loot was sold, give the player the total gold
-    if totalGold > 0 then
-        -- Add the gold to the player's bank or cash, based on configuration
-        if config.cash_to_bank then
-            player:setBankBalance(player:getBankBalance() + totalGold)
-            player:sendTextMessage(MESSAGE_INFO_DESCR, 'Money has been added to your bank account.')
-        else
-            player:addMoney(totalGold)
-        end
-        player:sendTextMessage(MESSAGE_INFO_DESCR, 'You received ' .. totalGold .. ' gold for your loot!')
+    sellContainerItems(inbox)
 
-        -- Optionally, show feedback of the sold items
-        player:sendTextMessage(MESSAGE_INFO_DESCR, "You sold the following items: " .. table.concat(soldItems, ", "))
-    else
-        player:sendTextMessage(MESSAGE_INFO_DESCR, 'You don\'t have any loot to sell.')
+    if totalWorth == 0 then
+        player:sendTextMessage(MESSAGE_EVENT_ADVANCE, "No sellable loot in your pouch.")
+        return true
     end
 
+    -- Calculate payout at 80%
+    local payout = math.floor(totalWorth * SELL_PERCENT + 0.5)
+    if payout < 1 then
+        player:sendTextMessage(MESSAGE_EVENT_ADVANCE, "Your loot's value is too low to yield any gold.")
+        return true
+    end
+
+    -- Convert gold to coins and attempt to put in player's main backpack
+    local backpack = player:getSlotItem(CONST_SLOT_BACKPACK)
+    local remaining = payout
+    -- crystal coins (10k)
+    local crystals = math.floor(remaining / 10000)
+    remaining = remaining - crystals * 10000
+    -- platinum coins (100)
+    local plats = math.floor(remaining / 100)
+    remaining = remaining - plats * 100
+    -- gold coins (1)
+    local gold = remaining
+    if crystals > 0 then player:addItem(3043, crystals) end -- crystal coin ID 2160
+    if plats > 0 then player:addItem(3035, plats) end       -- platinum coin ID 2152
+    if gold > 0 then player:addItem(3031, gold) end         -- gold coin ID 2148
+
+    player:sendTextMessage(MESSAGE_EVENT_ADVANCE, string.format(
+        "Sold loot for %d gold (you received %d after commission).", totalWorth, payout))
     return true
 end
 
--- Register the item with ID 50384 that triggers the loot sell
-itemLootSeller:id(50384)  -- Action ID for the item (Loot Sell Token with ID 50384)
-itemLootSeller:register()
+lootSeller:id(50372)
+lootSeller:register()
